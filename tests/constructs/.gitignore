@@ -1,0 +1,7 @@
+/target
+/dependencies
+/.build
+*.f
+*.sv
+*.sv.map
+summary.txt

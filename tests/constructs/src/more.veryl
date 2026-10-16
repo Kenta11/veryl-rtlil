@@ -1,0 +1,104 @@
+package MorePkg {
+    enum Op: logic<2> { ADD, SUB, AND, OR, }
+    struct Pair { hi: logic<4>, lo: logic<4>, }
+}
+module FnIf (x: input logic<4>, o: output logic<4>) {
+    function f (a: input logic<4>) -> logic<4> {
+        var r: logic<4>;
+        if a[0] { r = a + 1; } else { r = a - 1; }
+        return r;
+    }
+    inst u: Child (a: f(x), o);
+}
+module Child (a: input logic<4>, o: output logic<4>) {
+    assign o = ~a;
+}
+module Latch (en: input logic, d: input logic<4>, o: output logic<4>) {
+    always_comb {
+        if en { o = d; }
+    }
+}
+module CaseW (x: input logic<4>, o: output logic<2>) {
+    always_comb {
+        case x {
+            4'b1x0x: o = 0;
+            4'b0000, 4'b0001: o = 1;
+            4..=7: o = 2;
+            default: o = 3;
+        }
+    }
+}
+module EnumCmp (op: input MorePkg::Op, a: input logic<8>, b: input logic<8>, o: output logic<8>) {
+    always_comb {
+        o = case op {
+            MorePkg::Op::ADD: a + b,
+            MorePkg::Op::SUB: a - b,
+            MorePkg::Op::AND: a & b,
+            default: a | b,
+        };
+    }
+}
+module SignedOps (a: input signed logic<8>, b: input signed logic<8>, o: output signed logic<8>, c: output logic, d: output signed logic<16>) {
+    assign o = (a >>> 2) + (b / 3) - (a % b);
+    assign c = a <: b;
+    assign d = a * b;
+}
+module IfExpr (s: input logic, a: input logic<3>, b: input logic<3>, o: output logic<4>) {
+    assign o = if s ? a : b + 1;
+}
+module StructCtor (a: input logic<4>, b: input logic<4>, o: output MorePkg::Pair) {
+    assign o = MorePkg::Pair'{hi: a, lo: b + 1};
+}
+module Dyn2D (m: input logic<4, 8>, i: input logic<2>, j: input logic<3>, o: output logic, p: output logic<8>) {
+    assign o = m[i][j];
+    assign p = m[i];
+}
+module DynPart (v: input logic<16>, b: input logic<4>, o: output logic<4>, q: output logic<4>, r: output logic<4>) {
+    assign o = v[b+:4];
+    assign q = v[b-:4];
+    assign r = v[b[1:0] step 4];
+}
+module Rep (v: input logic<4>, o: output logic<12>) {
+    assign o = {v repeat 3};
+}
+module SyncRst (i_clk: input clock, i_rst: input reset_sync_high, d: input logic<4>, o: output logic<4>) {
+    always_ff { if_reset { o = 4'd5; } else { o = d; } }
+}
+module NegClk (i_clk: input clock_negedge, i_rst: input reset_async_low, d: input logic<4>, o: output logic<4>) {
+    always_ff { if_reset { o = 0; } else { o = d; } }
+}
+module LetAlways (d: input logic<4>, o: output logic<4>) {
+    always_comb {
+        let t: logic<4> = d + 1;
+        o = t * 2;
+    }
+}
+module FnOut (x: input logic<4>, o: output logic<4>, p: output logic) {
+    function g (a: input logic<4>, b: output logic) -> logic<4> {
+        b = a[3];
+        return a << 1;
+    }
+    always_comb {
+        o = g(x, p);
+    }
+}
+module ArrDef (i_clk: input clock, i_rst: input reset, en: input logic, d: input logic<4>, idx: input logic<2>, o: output logic<16>) {
+    var a: logic<4> [4];
+    always_ff {
+        if_reset { a = '{default: 4'd3}; }
+        else if en { a[idx] = d; }
+    }
+    assign o = {a[0], a[1], a[2], a[3]};
+}
+module BreakLoop (v: input logic<8>, o: output logic<4>) {
+    always_comb {
+        o = 8;
+        for i in 0..8 {
+            if v[i] { o = i; break; }
+        }
+    }
+}
+module SU (a: input logic<8>, o: output signed logic<9>, p: output logic<9>) {
+    assign o = $signed(a) + 1;
+    assign p = $unsigned(a) - 1;
+}

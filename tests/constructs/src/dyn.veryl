@@ -1,0 +1,31 @@
+package DynPkg {
+    struct S { z: logic, c: logic<2>, }
+}
+module DynA (i: input logic<12>, idx: input logic<2>, o: output logic<3>) {
+    var a: logic<3> [4];
+    always_comb { a[0] = i[2:0]; a[1] = i[5:3]; a[2] = i[8:6]; a[3] = i[11:9]; o = a[idx]; }
+}
+module DynB (i: input logic<12>, idx: input logic<2>, o: output logic<2>) {
+    var a: DynPkg::S [4];
+    always_comb { a[0] = i[2:0]; a[1] = i[5:3]; a[2] = i[8:6]; a[3] = i[11:9]; o = a[idx].c; }
+}
+module DynC (i: input logic<12>, idx: input logic<2>, o: output logic<1>) {
+    var a: DynPkg::S [4];
+    always_comb { a[0] = i[2:0]; a[1] = i[5:3]; a[2] = i[8:6]; a[3] = i[11:9]; o = a[idx].z; }
+}
+module DynD (i: input logic<3>, idx: input logic<2>, o: output logic<12>) {
+    var a: logic<3> [4];
+    always_comb { a = '{default: 0}; a[idx] = i; o = {a[0], a[1], a[2], a[3]}; }
+}
+module DynE (i: input logic<12>, idx: input logic<2>, o: output logic<2>) {
+    var a: DynPkg::S [4];
+    var k: logic<2>;
+    always_comb { a[0] = i[2:0]; a[1] = i[5:3]; a[2] = i[8:6]; a[3] = i[11:9]; k = idx; o = a[k].c; }
+}
+module DynF (i: input logic<12>, idx: input logic<2>, o: output logic<4>) {
+    var a: DynPkg::S [4];
+    var any: logic<4>;
+    always_comb { a[0] = i[2:0]; a[1] = i[5:3]; a[2] = i[8:6]; a[3] = i[11:9];
+        for j in 0..4 { any[j] = !a[j].z; }
+        o = any; }
+}

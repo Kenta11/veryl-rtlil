@@ -1,0 +1,31 @@
+package MPkg {
+    struct R16 { all_zero: logic, count: logic<4>, }
+}
+module M1 (k: input logic<2>, c: input logic<2>, z: input logic, o: output logic<5>) {
+    var ret: MPkg::R16;
+    always_comb {
+        ret.all_zero = z;
+        ret.count    = {k, c};
+        o = {ret.all_zero, ret.count};
+    }
+}
+module M2 (k: input logic<2>, c: input logic<2>, o: output logic<4>) {
+    var ret: MPkg::R16;
+    always_comb {
+        ret.count = {k, c};
+        o = ret.count;
+    }
+}
+module M3 (k: input logic<2>, c: input logic<2>, o: output logic<4>) {
+    always_comb {
+        o = {k, c};
+    }
+}
+module M4 (k: input logic<2>, c: input logic<2>, z: input logic, o: output logic<5>) {
+    var ret: MPkg::R16;
+    always_comb {
+        ret.all_zero = z;
+        ret.count    = {k, c};
+        o = ret;
+    }
+}

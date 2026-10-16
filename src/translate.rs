@@ -617,20 +617,20 @@ impl<'a> ModCtx<'a> {
                 let mut root = CaseBody::default();
                 self.statements(&mut p, &mut root, &c.statements)?;
                 let updates = self.finish_updates(&p)?;
-                if updates.is_empty() {
-                    return Ok(());
+                if !root.is_empty() {
+                    let name = self.next_proc_name(&format!("comb{idx}"));
+                    self.m.processes.push(Process {
+                        name,
+                        root,
+                        syncs: vec![],
+                        attrs: vec![],
+                    });
                 }
-                let name = self.next_proc_name(&format!("comb{idx}"));
-                self.m.processes.push(Process {
-                    name,
-                    root,
-                    syncs: vec![Sync {
-                        kind: SyncKind::Always,
-                        signal: None,
-                        updates,
-                    }],
-                    attrs: vec![],
-                });
+                // A bit that is not assigned on every path keeps its own
+                // value: a combinational loop, which is what sv-elab builds.
+                for (lhs, rhs) in updates {
+                    self.m.connect(lhs, rhs);
+                }
                 Ok(())
             }
             Declaration::Ff(ff) => self.ff_declaration(idx, ff),
@@ -1323,13 +1323,18 @@ impl<'a> ModCtx<'a> {
                 }
                 let total = info.total;
                 let ones = SigSpec::fill(Bit::One, w).resize(total, false);
-                let mut mask = self.m.binop("$shl", &ones, &off_sig, false, false, total);
+                // `$shift` shifts right by B; a negative (signed) B shifts left,
+                // so A << off is $shift(A, -off) and bits below 0 fall away.
+                let fw = off_sig.width() + 1;
+                let o = off_sig.resize(fw, true);
+                let noff = self.m.unop("$neg", &o, true, fw);
+                let mut mask = self.m.binop("$shift", &ones, &noff, false, true, total);
                 if let Some(valid) = self.last_valid.take() {
                     let zero = SigSpec::fill(Bit::Zero, total);
                     mask = self.m.mux(&zero, &mask, &valid);
                 }
                 let valx = val.resize(total, false);
-                let sval = self.m.binop("$shl", &valx, &off_sig, false, false, total);
+                let sval = self.m.binop("$shift", &valx, &noff, false, true, total);
                 let new = self.m.bwmux(&base, &sval, &mask);
                 p.cur.insert(d.id, new);
                 p.note_write(d.id, None);
@@ -1477,16 +1482,18 @@ impl<'a> ModCtx<'a> {
                 if s == 0 {
                     Offset::Dynamic(dyn_off)
                 } else {
-                    let fw = dyn_off.width();
+                    let fw = dyn_off.width() + 1;
                     let c = SigSpec::const_u64(s as u64, fw);
-                    Offset::Dynamic(self.m.binop("$add", &dyn_off, &c, false, false, fw))
+                    let d = dyn_off.resize(fw, true);
+                    Offset::Dynamic(self.m.binop("$add", &d, &c, true, true, fw))
                 }
             }
             Offset::Dynamic(d) => {
-                let fw = d.width().max(dyn_off.width()) + 1;
+                // The array part is unsigned, the packed part signed.
+                let fw = d.width().max(dyn_off.width()) + 2;
                 let a = d.resize(fw, false);
-                let b = dyn_off.resize(fw, false);
-                Offset::Dynamic(self.m.binop("$add", &a, &b, false, false, fw))
+                let b = dyn_off.resize(fw, true);
+                Offset::Dynamic(self.m.binop("$add", &a, &b, true, true, fw))
             }
         };
         Ok((off, w, valid_sig))
@@ -1598,24 +1605,26 @@ impl<'a> ModCtx<'a> {
             st[..k].to_vec()
         };
         let elem_w = if st.is_empty() { 1 } else { st[k - 1] };
+        // Offsets are signed: a `-:` select whose base is small reaches below
+        // bit 0 and SystemVerilog then reads x / writes nothing for those bits.
         let mut idx_sigs = vec![];
         let mut fw = bits_for(info.total.max(2)) + 2;
         for e in select.0.iter() {
             let (w, s) = self.self_size(e)?;
             let v = self.lower(p, case, e, w, s)?;
-            fw = fw.max(w + bits_for(info.total.max(2)) + 2);
-            idx_sigs.push(v);
+            fw = fw.max(w + bits_for(info.total.max(2)) + 3);
+            idx_sigs.push((v, s));
         }
         let mut off = SigSpec::const_u64(0, fw);
-        for (i, v) in idx_sigs.into_iter().enumerate() {
-            let v = v.resize(fw, false);
+        for (i, (v, sg)) in idx_sigs.into_iter().enumerate() {
+            let v = v.resize(fw, sg);
             let term = if strides_used[i] == 1 {
                 v
             } else {
                 let c = SigSpec::const_u64(strides_used[i] as u64, fw);
-                self.m.binop("$mul", &v, &c, false, false, fw)
+                self.m.binop("$mul", &v, &c, true, true, fw)
             };
-            off = self.m.binop("$add", &off, &term, false, false, fw);
+            off = self.m.binop("$add", &off, &term, true, true, fw);
         }
         let (off, w) = match &select.1 {
             None => (off, elem_w),
@@ -1628,11 +1637,11 @@ impl<'a> ModCtx<'a> {
                     VarSelectOp::PlusColon => (off, w),
                     VarSelectOp::MinusColon => {
                         let c = SigSpec::const_u64((w as u64).saturating_sub(1), fw);
-                        (self.m.binop("$sub", &off, &c, false, false, fw), w)
+                        (self.m.binop("$sub", &off, &c, true, true, fw), w)
                     }
                     VarSelectOp::Step => {
                         let c = SigSpec::const_u64(w as u64, fw);
-                        (self.m.binop("$mul", &off, &c, false, false, fw), w)
+                        (self.m.binop("$mul", &off, &c, true, true, fw), w)
                     }
                 }
             }
@@ -1683,7 +1692,7 @@ impl<'a> ModCtx<'a> {
                     // address, and SystemVerilog allows any value here.
                     base.extract(0, w.min(info.total)).resize(w, false)
                 } else {
-                    let v = self.m.binop("$shiftx", &base, &o, false, false, w);
+                    let v = self.m.binop("$shiftx", &base, &o, false, true, w);
                     match valid {
                         Some(valid) => {
                             let x = SigSpec::fill(Bit::X, w);
@@ -1969,6 +1978,7 @@ impl<'a> ModCtx<'a> {
                     return unsupported("unresolved array literal element width", &ct.token);
                 };
                 let mut elems_msb_first: Vec<SigSpec> = vec![];
+                let nelem = ct.r#type.total_array().unwrap_or(1).max(1);
                 for item in items {
                     match item {
                         ArrayLiteralItem::Value(e, rep) => {
@@ -1984,8 +1994,13 @@ impl<'a> ModCtx<'a> {
                                 elems_msb_first.push(v.clone());
                             }
                         }
-                        ArrayLiteralItem::Defaul(_) => {
-                            return unsupported("array literal default", &ct.token);
+                        ArrayLiteralItem::Defaul(e) => {
+                            // `'{default: v}`: every element not given
+                            // explicitly takes `v`.
+                            let v = self.lower_assign(p, case, e, ew)?;
+                            while elems_msb_first.len() < nelem {
+                                elems_msb_first.push(v.clone());
+                            }
                         }
                     }
                 }
@@ -2489,9 +2504,10 @@ impl ModCtx<'_> {
                 if c == 0 {
                     Offset::Dynamic(d)
                 } else {
-                    let fw = d.width();
+                    let fw = d.width() + 1;
                     let k = SigSpec::const_u64(c as u64, fw);
-                    Offset::Dynamic(self.m.binop("$add", &d, &k, false, false, fw))
+                    let d = d.resize(fw, false);
+                    Offset::Dynamic(self.m.binop("$add", &d, &k, true, true, fw))
                 }
             }
         }

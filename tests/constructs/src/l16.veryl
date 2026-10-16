@@ -1,0 +1,75 @@
+module L16inline (i: input logic<16>, o: output logic<5>) {
+    import $std::lzc_common_pkg::*;
+    var ret4       : result::<4>     [4];
+    var any_one    : logic       <4>    ;
+    var ret_any_one: result::<4>        ;
+    var ret        : result::<16>       ;
+    always_comb {
+        for j in 0..4 {
+            ret4[j]    = lzc4(i[j step 4]);
+            any_one[j] = !ret4[j].all_zero;
+        }
+        ret_any_one = lzc4(any_one);
+        ret.all_zero = ret_any_one.all_zero;
+        ret.count    = {ret_any_one.count, ret4[ret_any_one.count].count};
+        o = {ret.all_zero, ret.count};
+    }
+}
+module L16noloop (i: input logic<16>, o: output logic<5>) {
+    import $std::lzc_common_pkg::*;
+    var ret4       : result::<4>     [4];
+    var any_one    : logic       <4>    ;
+    var ret_any_one: result::<4>        ;
+    var ret        : result::<16>       ;
+    always_comb {
+        ret4[0]    = lzc4(i[0 step 4]);
+        ret4[1]    = lzc4(i[1 step 4]);
+        ret4[2]    = lzc4(i[2 step 4]);
+        ret4[3]    = lzc4(i[3 step 4]);
+        any_one[0] = !ret4[0].all_zero;
+        any_one[1] = !ret4[1].all_zero;
+        any_one[2] = !ret4[2].all_zero;
+        any_one[3] = !ret4[3].all_zero;
+        ret_any_one = lzc4(any_one);
+        ret.all_zero = ret_any_one.all_zero;
+        ret.count    = {ret_any_one.count, ret4[ret_any_one.count].count};
+        o = {ret.all_zero, ret.count};
+    }
+}
+module L16idx (i: input logic<16>, k: input logic<2>, o: output logic<2>) {
+    import $std::lzc_common_pkg::*;
+    var ret4       : result::<4>     [4];
+    always_comb {
+        ret4[0]    = lzc4(i[0 step 4]);
+        ret4[1]    = lzc4(i[1 step 4]);
+        ret4[2]    = lzc4(i[2 step 4]);
+        ret4[3]    = lzc4(i[3 step 4]);
+        o = ret4[k].count;
+    }
+}
+module L16any (i: input logic<16>, o: output logic<4>) {
+    import $std::lzc_common_pkg::*;
+    var ret4       : result::<4>     [4];
+    var any_one    : logic       <4>    ;
+    always_comb {
+        ret4[0]    = lzc4(i[0 step 4]);
+        ret4[1]    = lzc4(i[1 step 4]);
+        ret4[2]    = lzc4(i[2 step 4]);
+        ret4[3]    = lzc4(i[3 step 4]);
+        any_one[0] = !ret4[0].all_zero;
+        any_one[1] = !ret4[1].all_zero;
+        any_one[2] = !ret4[2].all_zero;
+        any_one[3] = !ret4[3].all_zero;
+        o = any_one;
+    }
+}
+module L16two (i: input logic<8>, o: output logic<6>) {
+    import $std::lzc_common_pkg::*;
+    var r0: result::<4>;
+    var r1: result::<4>;
+    always_comb {
+        r0 = lzc4(i[3:0]);
+        r1 = lzc4(i[7:4]);
+        o = {r0.all_zero, r0.count, r1.all_zero, r1.count};
+    }
+}

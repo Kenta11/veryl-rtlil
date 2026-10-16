@@ -1,0 +1,32 @@
+module Ram7 (
+    i_clk: input clock, i_rst: input reset, i_wea: input logic, i_adra: input logic<3>, i_da: input logic<8>,
+    i_adrb: input logic<3>, o_qb: output logic<8>,
+) {
+    inst u: $std::ram #(WORD_SIZE: 7, ADDRESS_WIDTH: 3) (
+        i_clk, i_rst, i_clr: '0, i_mea: '1, i_wea, i_adra, i_da, i_meb: '1, i_adrb, o_qb,
+    );
+}
+module Ram8 (
+    i_clk: input clock, i_rst: input reset, i_wea: input logic, i_adra: input logic<3>, i_da: input logic<8>,
+    i_adrb: input logic<3>, o_qb: output logic<8>,
+) {
+    inst u: $std::ram #(WORD_SIZE: 8, ADDRESS_WIDTH: 3) (
+        i_clk, i_rst, i_clr: '0, i_mea: '1, i_wea, i_adra, i_da, i_meb: '1, i_adrb, o_qb,
+    );
+}
+module Ram7b (
+    i_clk: input clock, i_rst: input reset, i_wea: input logic, i_adra: input logic<3>, i_da: input logic<8>,
+    i_adrb: input logic<3>, o_qb: output logic<8>,
+) {
+    inst u: $std::ram #(WORD_SIZE: 7, ADDRESS_WIDTH: 3, BUFFER_OUT: 1) (
+        i_clk, i_rst, i_clr: '0, i_mea: '1, i_wea, i_adra, i_da, i_meb: '1, i_adrb, o_qb,
+    );
+}
+module Arr7 (
+    i_clk: input clock, i_wea: input logic, i_adra: input logic<3>, i_da: input logic<8>,
+    i_adrb: input logic<3>, o_qb: output logic<8>,
+) {
+    var m: logic<8> [7];
+    always_ff { if i_wea { m[i_adra] = i_da; } }
+    assign o_qb = m[i_adrb];
+}

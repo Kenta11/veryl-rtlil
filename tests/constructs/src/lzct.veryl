@@ -1,0 +1,28 @@
+module Lzc4 (i: input logic<4>, o: output logic<3>) {
+    import $std::lzc_common_pkg::*;
+    var r: result::<4>;
+    always_comb { r = lzc4(i); o = {r.all_zero, r.count}; }
+}
+module Lzc8 (i: input logic<8>, o: output logic<4>) {
+    import $std::lzc_common_pkg::*;
+    var r: result::<8>;
+    always_comb { r = lzc8(i); o = {r.all_zero, r.count}; }
+}
+module Lzc16 (i: input logic<16>, o: output logic<5>) {
+    import $std::lzc_common_pkg::*;
+    var r: result::<16>;
+    always_comb { r = lzc16(i); o = {r.all_zero, r.count}; }
+}
+module Lzc32 (i: input logic<32>, o: output logic<6>) {
+    import $std::lzc_common_pkg::*;
+    var r: result::<32>;
+    always_comb { r = lzc32(i); o = {r.all_zero, r.count}; }
+}
+module Rev8 (i: input logic<8>, o: output logic<8>) {
+    assign o = $std::bit_reverse::<8>(i);
+}
+module LzcTop (i: input logic<32>, o: output logic<6>) {
+    import $std::lzc_pkg::<32>::*;
+    var r: lzc_result;
+    always_comb { r = lzc(i, true); o = {r.all_zero, r.count}; }
+}

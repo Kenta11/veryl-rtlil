@@ -1015,6 +1015,16 @@ pub mod fold {
                     .map(|i| if i + sh < aw.len() { aw[i + sh] } else { fill })
                     .collect()
             }
+            "$shift" => {
+                let sh = to_int(b, b_signed).to_i64()?;
+                let aw = extend(a, y_width.max(a.len()), a_signed);
+                (0..y_width)
+                    .map(|i| {
+                        let src = i as i64 + sh;
+                        if src >= 0 && (src as usize) < aw.len() { aw[src as usize] } else { Bit::Zero }
+                    })
+                    .collect()
+            }
             "$shiftx" => {
                 let sh = to_int(b, b_signed).to_i64()?;
                 (0..y_width)
