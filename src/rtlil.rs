@@ -558,6 +558,11 @@ impl Module {
     // ----- cell helpers -------------------------------------------------
 
     pub fn unop(&mut self, kind: &str, a: &SigSpec, a_signed: bool, y_width: usize) -> SigSpec {
+        if let Some(bits) = a.as_const()
+            && let Some(r) = fold::unop(kind, &bits, a_signed, y_width)
+        {
+            return SigSpec::consts(r);
+        }
         let y = self.fresh_wire("y", y_width);
         self.add_cell(
             kind,
@@ -580,6 +585,12 @@ impl Module {
         b_signed: bool,
         y_width: usize,
     ) -> SigSpec {
+        if let Some(ab) = a.as_const()
+            && let Some(bb) = b.as_const()
+            && let Some(r) = fold::binop(kind, &ab, &bb, a_signed, b_signed, y_width)
+        {
+            return SigSpec::consts(r);
+        }
         let y = self.fresh_wire("y", y_width);
         self.add_cell(
             kind,
@@ -602,6 +613,13 @@ impl Module {
         if a == b {
             return a.clone();
         }
+        if let Some(sb) = s.as_const() {
+            match sb[0] {
+                Bit::Zero => return a.clone(),
+                Bit::One => return b.clone(),
+                _ => {}
+            }
+        }
         let w = a.width();
         let y = self.fresh_wire("mux", w);
         self.add_cell(
@@ -622,6 +640,15 @@ impl Module {
         let w = a.width();
         debug_assert_eq!(b.width(), w);
         debug_assert_eq!(s.width(), w);
+        if let Some(sb) = s.as_const()
+            && sb.iter().all(|x| matches!(x, Bit::Zero | Bit::One))
+        {
+            let mut r = SigSpec::empty();
+            for (i, x) in sb.iter().enumerate() {
+                r.append(&if *x == Bit::One { b.bit(i) } else { a.bit(i) });
+            }
+            return r;
+        }
         let y = self.fresh_wire("bwmux", w);
         self.add_cell(
             "$bwmux",
@@ -822,4 +849,191 @@ pub fn public_id(name: &str) -> String {
         }
     }
     s
+}
+
+
+/// Constant folding of cells whose inputs are fully defined constants, with
+/// Yosys cell semantics.
+pub mod fold {
+    use super::Bit;
+    use num_bigint::{BigInt, Sign};
+    use num_traits::{One, Signed, ToPrimitive, Zero};
+
+    fn defined(bits: &[Bit]) -> bool {
+        bits.iter().all(|b| matches!(b, Bit::Zero | Bit::One))
+    }
+
+    pub fn to_int(bits: &[Bit], signed: bool) -> BigInt {
+        let mut v = BigInt::zero();
+        for (i, b) in bits.iter().enumerate() {
+            if *b == Bit::One {
+                v += BigInt::one() << i;
+            }
+        }
+        if signed && !bits.is_empty() && bits[bits.len() - 1] == Bit::One {
+            v -= BigInt::one() << bits.len();
+        }
+        v
+    }
+
+    pub fn from_int(v: &BigInt, width: usize) -> Vec<Bit> {
+        // Two's complement modulo 2^width.
+        let m = BigInt::one() << width;
+        let mut r = v % &m;
+        if r.sign() == Sign::Minus {
+            r += &m;
+        }
+        let (_, digits) = r.to_u32_digits();
+        (0..width)
+            .map(|i| {
+                let d = digits.get(i / 32).copied().unwrap_or(0);
+                if (d >> (i % 32)) & 1 == 1 { Bit::One } else { Bit::Zero }
+            })
+            .collect()
+    }
+
+    fn bool_bit(b: bool) -> Vec<Bit> {
+        vec![if b { Bit::One } else { Bit::Zero }]
+    }
+
+    fn extend(bits: &[Bit], width: usize, signed: bool) -> Vec<Bit> {
+        let mut r: Vec<Bit> = bits.iter().copied().take(width).collect();
+        let pad = if signed && !bits.is_empty() { bits[bits.len() - 1] } else { Bit::Zero };
+        while r.len() < width {
+            r.push(pad);
+        }
+        r
+    }
+
+    pub fn unop(kind: &str, a: &[Bit], a_signed: bool, y_width: usize) -> Option<Vec<Bit>> {
+        if !defined(a) {
+            return None;
+        }
+        let r = match kind {
+            "$not" => extend(a, y_width, a_signed)
+                .iter()
+                .map(|b| if *b == Bit::One { Bit::Zero } else { Bit::One })
+                .collect(),
+            "$neg" => {
+                let v = to_int(a, a_signed);
+                from_int(&(-v), y_width)
+            }
+            "$pos" => extend(a, y_width, a_signed),
+            "$reduce_and" => extend(&bool_bit(a.iter().all(|b| *b == Bit::One)), y_width, false),
+            "$reduce_or" | "$reduce_bool" => {
+                extend(&bool_bit(a.iter().any(|b| *b == Bit::One)), y_width, false)
+            }
+            "$reduce_xor" => extend(
+                &bool_bit(a.iter().filter(|b| **b == Bit::One).count() % 2 == 1),
+                y_width,
+                false,
+            ),
+            "$reduce_xnor" => extend(
+                &bool_bit(a.iter().filter(|b| **b == Bit::One).count() % 2 == 0),
+                y_width,
+                false,
+            ),
+            "$logic_not" => extend(&bool_bit(!a.iter().any(|b| *b == Bit::One)), y_width, false),
+            _ => return None,
+        };
+        Some(r)
+    }
+
+    pub fn binop(
+        kind: &str,
+        a: &[Bit],
+        b: &[Bit],
+        a_signed: bool,
+        b_signed: bool,
+        y_width: usize,
+    ) -> Option<Vec<Bit>> {
+        if !defined(a) || !defined(b) {
+            return None;
+        }
+        let av = to_int(a, a_signed);
+        let bv = to_int(b, b_signed);
+        let r = match kind {
+            "$add" => from_int(&(av + bv), y_width),
+            "$sub" => from_int(&(av - bv), y_width),
+            "$mul" => from_int(&(av * bv), y_width),
+            "$div" => {
+                if bv.is_zero() {
+                    return None;
+                }
+                // Truncating division (Verilog semantics).
+                let q = &av / &bv;
+                from_int(&q, y_width)
+            }
+            "$mod" => {
+                if bv.is_zero() {
+                    return None;
+                }
+                let q = &av / &bv;
+                let r = av - q * bv;
+                from_int(&r, y_width)
+            }
+            "$pow" => {
+                let e = bv.to_u32()?;
+                if bv.is_negative() {
+                    return None;
+                }
+                from_int(&av.pow(e), y_width)
+            }
+            "$and" | "$or" | "$xor" | "$xnor" => {
+                let aw = extend(a, y_width, a_signed);
+                let bw = extend(b, y_width, b_signed);
+                aw.iter()
+                    .zip(bw.iter())
+                    .map(|(x, y)| {
+                        let (x, y) = (*x == Bit::One, *y == Bit::One);
+                        let v = match kind {
+                            "$and" => x && y,
+                            "$or" => x || y,
+                            "$xor" => x ^ y,
+                            _ => !(x ^ y),
+                        };
+                        if v { Bit::One } else { Bit::Zero }
+                    })
+                    .collect()
+            }
+            "$shl" | "$sshl" => {
+                let sh = to_int(b, false).to_usize()?;
+                let aw = extend(a, y_width, a_signed);
+                let mut r = vec![Bit::Zero; y_width];
+                for i in 0..y_width {
+                    if i >= sh {
+                        r[i] = aw[i - sh];
+                    }
+                }
+                r
+            }
+            "$shr" | "$sshr" => {
+                let sh = to_int(b, false).to_usize()?;
+                let aw = extend(a, y_width.max(a.len()), a_signed);
+                let fill = if kind == "$sshr" && a_signed { aw[aw.len() - 1] } else { Bit::Zero };
+                (0..y_width)
+                    .map(|i| if i + sh < aw.len() { aw[i + sh] } else { fill })
+                    .collect()
+            }
+            "$shiftx" => {
+                let sh = to_int(b, b_signed).to_i64()?;
+                (0..y_width)
+                    .map(|i| {
+                        let src = i as i64 + sh;
+                        if src >= 0 && (src as usize) < a.len() { a[src as usize] } else { Bit::X }
+                    })
+                    .collect()
+            }
+            "$lt" => extend(&bool_bit(av < bv), y_width, false),
+            "$le" => extend(&bool_bit(av <= bv), y_width, false),
+            "$gt" => extend(&bool_bit(av > bv), y_width, false),
+            "$ge" => extend(&bool_bit(av >= bv), y_width, false),
+            "$eq" => extend(&bool_bit(av == bv), y_width, false),
+            "$ne" => extend(&bool_bit(av != bv), y_width, false),
+            "$logic_and" => extend(&bool_bit(!av.is_zero() && !bv.is_zero()), y_width, false),
+            "$logic_or" => extend(&bool_bit(!av.is_zero() || !bv.is_zero()), y_width, false),
+            _ => return None,
+        };
+        Some(r)
+    }
 }

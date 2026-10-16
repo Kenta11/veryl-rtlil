@@ -32,7 +32,10 @@ work="$(mktemp -d)"
 
 "$here/clean_filelist.sh" "$filelist" "$work/clean.f" 2>"$work/dropped.txt"
 cat "$work/dropped.txt" >&2
-export FULL_FILELIST="$filelist"
+# Every SystemVerilog file of the project (the filelist only names the
+# files the project's own modules need).
+{ cat "$filelist"; find "$project" -name '*.sv' -not -path '*/target/*' -not -path '*/.build/*' | sort; } | awk '!seen[$0]++' > "$work/full.f"
+export FULL_FILELIST="$work/full.f"
 filelist="$work/clean.f"
 (cd "$project" && "$VERYL_RTLIL" --report -o "$work/design.il" 2>"$work/report.txt" >/dev/null)
 grep -v '^\[INFO' "$work/report.txt" > "$work/report2.txt"

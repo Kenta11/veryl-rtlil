@@ -394,6 +394,20 @@ impl<'a> ModCtx<'a> {
     }
 
     fn build(&mut self) -> TResult<()> {
+        if std::env::var_os("VERYL_RTLIL_DEBUG").is_some() {
+            eprintln!("== module {}", str_of(self.ir.name));
+            let mut ports: Vec<_> = self.ir.ports.iter().collect();
+            ports.sort_by_key(|p| *p.1);
+            for (path, vid) in ports {
+                let k = self.ir.variables.get(vid).map(|v| v.kind.to_string()).unwrap_or_default();
+                eprintln!("  port {path} = {vid} ({k})");
+            }
+            let mut im: Vec<_> = self.ir.interface_members.iter().collect();
+            im.sort_by_key(|p| *p.0);
+            for (vid, v) in im {
+                eprintln!("  interface_member {vid} {} : {} kind={}", v.path, v.r#type, v.kind);
+            }
+        }
         self.allocate_variables()?;
         self.declare_ports()?;
         for (idx, d) in self.ir.declarations.iter().enumerate() {
@@ -953,14 +967,22 @@ impl<'a> ModCtx<'a> {
     }
 
     fn for_statement(&mut self, p: &mut Proc, case: &mut CaseBody, f: &ForStatement) -> TResult<()> {
-        let bound = |ctx: &mut Self, b: &ForBound| -> TResult<usize> {
+        let bound = |ctx: &mut Self, p: &mut Proc, case: &mut CaseBody, b: &ForBound| -> TResult<usize> {
             match b {
                 ForBound::Const(v, _) => Ok(*v),
                 ForBound::Expression(e) => match e.eval_value(&mut ctx.eval) {
                     Some(v) => v.to_usize().ok_or_else(|| {
                         TranslateError::Unsupported("for bound does not fit".into())
                     }),
-                    None => unsupported("non-constant for bound", &f.token),
+                    None => {
+                        // A bound computed by earlier statements: lower it and
+                        // require the result to fold to a constant.
+                        let v = ctx.lower_self(p, case, e)?;
+                        match v.as_const_u64() {
+                            Some(n) => Ok(n as usize),
+                            None => unsupported("non-constant for bound", &f.token),
+                        }
+                    }
                 },
             }
         };
@@ -971,8 +993,8 @@ impl<'a> ModCtx<'a> {
                 inclusive,
                 step,
             } => {
-                let s = bound(self, start)?;
-                let e = bound(self, end)?;
+                let s = bound(self, p, case, start)?;
+                let e = bound(self, p, case, end)?;
                 let step = (*step).max(1);
                 let mut v = vec![];
                 let mut i = s;
@@ -988,8 +1010,8 @@ impl<'a> ModCtx<'a> {
                 inclusive,
                 step,
             } => {
-                let s = bound(self, start)?;
-                let e = bound(self, end)?;
+                let s = bound(self, p, case, start)?;
+                let e = bound(self, p, case, end)?;
                 let step = (*step).max(1);
                 let mut v = vec![];
                 let mut i = s;
@@ -1007,8 +1029,8 @@ impl<'a> ModCtx<'a> {
                 step,
                 op,
             } => {
-                let s = bound(self, start)?;
-                let e = bound(self, end)?;
+                let s = bound(self, p, case, start)?;
+                let e = bound(self, p, case, end)?;
                 let mut v = vec![];
                 let mut i = s;
                 while if *inclusive { i <= e } else { i < e } {
@@ -2274,8 +2296,51 @@ impl<'a> ModCtx<'a> {
             Component::Module(m) => m,
             _ => return unsupported("non-module instance", &inst.token),
         };
-        if !inst.interface_bindings.is_empty() {
-            return unsupported("modport function binding", &inst.token);
+        // Modport handles bound for imported functions carry no bits; only a
+        // binding of a real signal is unsupported.
+        let signal_bindings: Vec<_> = inst
+            .interface_bindings
+            .iter()
+            .filter(|b| {
+                child
+                    .interface_members
+                    .get(&b.child)
+                    .or_else(|| child.variables.get(&b.child))
+                    .is_some_and(|v| {
+                        !matches!(
+                            v.r#type.kind,
+                            TypeKind::Modport(_, _)
+                                | TypeKind::Interface(_)
+                                | TypeKind::Instance(_, _)
+                                | TypeKind::Module(_)
+                                | TypeKind::Package(_)
+                                | TypeKind::AbstractInterface(_)
+                        )
+                    })
+            })
+            .collect();
+        if !signal_bindings.is_empty() {
+            let desc: Vec<String> = signal_bindings
+                .iter()
+                .map(|b| {
+                    let c = child
+                        .variables
+                        .get(&b.child)
+                        .map(|v| v.path.to_string())
+                        .unwrap_or_else(|| format!("{}", b.child));
+                    let pp = self
+                        .ir
+                        .variables
+                        .get(&b.parent)
+                        .map(|v| v.path.to_string())
+                        .unwrap_or_else(|| format!("{}", b.parent));
+                    format!("{c} <- {pp}")
+                })
+                .collect();
+            return unsupported(
+                format!("modport function binding ({})", desc.join(", ")),
+                &inst.token,
+            );
         }
         let key = Translator::module_key(child);
         let Some(child_name) = self.children.get(&key).cloned() else {
