@@ -33,7 +33,7 @@ struct Opt {
     report: bool,
 
     /// Largest array (bits) that may be written through a dynamic index
-    #[arg(long, default_value_t = 1 << 16)]
+    #[arg(long, default_value_t = 1 << 24)]
     max_dynamic_bits: usize,
 }
 

@@ -1294,6 +1294,22 @@ impl<'a> ModCtx<'a> {
         if info.total == 0 {
             return Ok(());
         }
+        if !d.index.0.is_empty() && !d.index.is_const() {
+            if info.total > self.opts.max_dynamic_bits {
+                return unsupported(
+                    format!(
+                        "dynamic write into {} ({} bits exceeds the limit of {})",
+                        d.path, info.total, self.opts.max_dynamic_bits
+                    ),
+                    &d.token,
+                );
+            }
+            let base = p.cur.get(&d.id).cloned().unwrap_or_else(|| info.sig());
+            let new = self.write_dynamic_array(p, case, &info, &base, &d.index, &d.select, &d.comptime, &d.token, val)?;
+            p.cur.insert(d.id, new);
+            p.note_write(d.id, None);
+            return Ok(());
+        }
         let (off, w) = self.region(&info, &d.index, &d.select, &d.comptime, &d.token, Some((p, case)))?;
         let val = val.resize(w, false);
         let base = p
@@ -1664,7 +1680,6 @@ impl<'a> ModCtx<'a> {
             return unsupported(format!("reference to non-signal variable {id}"), &ct.token);
         };
         let base = p.cur.get(&id).cloned().unwrap_or_else(|| info.sig());
-        let (off, w) = self.region(&info, index, select, ct, &ct.token, Some((p, case)))?;
         let signed = if !select.is_empty() {
             false
         } else if ct.part_select.is_some() {
@@ -1672,6 +1687,11 @@ impl<'a> ModCtx<'a> {
         } else {
             info.ty.signed
         };
+        if !index.0.is_empty() && !index.is_const() {
+            let sig = self.read_dynamic_array(p, case, &info, &base, index, select, ct)?;
+            return Ok((sig, signed));
+        }
+        let (off, w) = self.region(&info, index, select, ct, &ct.token, Some((p, case)))?;
         let sig = match off {
             Offset::Static(lo) => {
                 if lo + w <= info.total {
@@ -1704,6 +1724,201 @@ impl<'a> ModCtx<'a> {
             }
         };
         Ok((sig, signed))
+    }
+
+    // ----- element-wise dynamic array access ----------------------------
+
+    /// Chunk index `g` (unsigned, `k` bits with `2^k > count`) selected by a
+    /// dynamic unpacked-array index, the number of chunks and the chunk width.
+    /// An out-of-range or negative index yields `g >= count`.
+    fn dyn_chunk_index(
+        &mut self,
+        p: &mut Proc,
+        case: &mut CaseBody,
+        info: &VarInfo,
+        index: &VarIndex,
+        token: &TokenRange,
+    ) -> TResult<(SigSpec, usize, usize, usize)> {
+        let nidx = index.0.len();
+        if nidx > info.shape.len() {
+            return unsupported("too many array indices", token);
+        }
+        let rem_elems: usize = info.shape[nidx..].iter().product::<usize>().max(1);
+        let sub_w = rem_elems * info.ew;
+        let count = info.nelem / rem_elems;
+        let st = strides(&info.shape);
+        let k = bits_for(count + 1);
+        let mut idx_sigs = vec![];
+        let mut fw = k;
+        for e in index.0.iter() {
+            let (w, sg) = self.self_size(e)?;
+            let v = self.lower(p, case, e, w, sg)?;
+            fw = fw.max(w + 1);
+            idx_sigs.push((v, sg));
+        }
+        let fw = fw + bits_for(count + 1);
+        let mut g = SigSpec::const_u64(0, fw);
+        let mut neg = SigSpec::const_bit(Bit::Zero);
+        for (i, (v, sg)) in idx_sigs.into_iter().enumerate() {
+            if sg {
+                let n = v.msb();
+                neg = self.m.binop("$or", &neg, &n, false, false, 1);
+            }
+            let v = v.resize(fw, false);
+            let term = if st[i] == 1 {
+                v
+            } else {
+                let c = SigSpec::const_u64(st[i] as u64, fw);
+                self.m.binop("$mul", &v, &c, false, false, fw)
+            };
+            g = self.m.binop("$add", &g, &term, false, false, fw);
+        }
+        // Fold anything out of range into the single value `count`.
+        let cnt = SigSpec::const_u64(count as u64, fw);
+        let in_range = self.m.binop("$lt", &g, &cnt, false, false, 1);
+        let not_neg = self.m.unop("$logic_not", &neg, false, 1);
+        let ok = self.m.binop("$and", &in_range, &not_neg, false, false, 1);
+        let g = self.m.mux(&cnt, &g, &ok);
+        Ok((g.extract(0, k), count, sub_w, k))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn read_dynamic_array(
+        &mut self,
+        p: &mut Proc,
+        case: &mut CaseBody,
+        info: &VarInfo,
+        base: &SigSpec,
+        index: &VarIndex,
+        select: &VarSelect,
+        ct: &Comptime,
+    ) -> TResult<SigSpec> {
+        let (g, count, sub_w, k) = self.dyn_chunk_index(p, case, info, index, &ct.token)?;
+        let chunk = if count == 1 {
+            // Yosys' memory mapping returns the single word regardless of the
+            // address; SystemVerilog allows any value here.
+            base.extract(0, sub_w)
+        } else {
+            // `$bmux` over the chunks; padding slots read as x.
+            let slots = 1usize << k;
+            let mut a = base.extract(0, count * sub_w);
+            a.append(&SigSpec::fill(Bit::X, (slots - count) * sub_w));
+            let cm1 = SigSpec::const_u64((count - 1) as u64, k);
+            let sel = self.m.binop("$sub", &cm1, &g, false, false, k);
+            let y = self.m.fresh_wire("bmux", sub_w);
+            self.m.add_cell(
+                "$bmux",
+                vec![
+                    ("\\WIDTH", ParamVal::Int(sub_w as i64)),
+                    ("\\S_WIDTH", ParamVal::Int(k as i64)),
+                ],
+                vec![("\\A", a), ("\\S", sel), ("\\Y", y.clone())],
+            );
+            y
+        };
+        // Within the chunk.
+        if select.is_empty() {
+            if let Some(ps) = &ct.part_select {
+                let moff: usize = ps.part_select.iter().map(|x| x.pos).sum();
+                let Some(mw) = ps.part_select.last().and_then(|x| x.r#type.total_width()) else {
+                    return unsupported("unresolved member width", &ct.token);
+                };
+                return Ok(chunk.extract(moff, mw));
+            }
+            return Ok(chunk);
+        }
+        if select.is_const_with_range() {
+            let Some((hi, lo)) = select.eval_value(&mut self.eval, &info.ty, false) else {
+                return unsupported("select could not be evaluated", &ct.token);
+            };
+            if hi < lo {
+                return unsupported("reversed select", &ct.token);
+            }
+            let w = hi - lo + 1;
+            if lo + w <= chunk.width() {
+                return Ok(chunk.extract(lo, w));
+            }
+            let mut sg = chunk.extract(lo.min(chunk.width()), chunk.width().saturating_sub(lo));
+            sg.append(&SigSpec::fill(Bit::X, w - sg.width()));
+            return Ok(sg);
+        }
+        let (off, w) = self.dynamic_select(p, case, info, select, ct, &ct.token)?;
+        Ok(self.m.binop("$shiftx", &chunk, &off, false, true, w))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_dynamic_array(
+        &mut self,
+        p: &mut Proc,
+        case: &mut CaseBody,
+        info: &VarInfo,
+        base: &SigSpec,
+        index: &VarIndex,
+        select: &VarSelect,
+        ct: &Comptime,
+        token: &TokenRange,
+        val: &SigSpec,
+    ) -> TResult<SigSpec> {
+        let (g, count, sub_w, k) = self.dyn_chunk_index(p, case, info, index, token)?;
+        // How the value lands inside a chunk.
+        enum Inner {
+            Static(usize, usize),
+            Dynamic(SigSpec, usize),
+        }
+        let inner = if select.is_empty() {
+            match &ct.part_select {
+                Some(ps) => {
+                    let moff: usize = ps.part_select.iter().map(|x| x.pos).sum();
+                    let Some(mw) = ps.part_select.last().and_then(|x| x.r#type.total_width()) else {
+                        return unsupported("unresolved member width", token);
+                    };
+                    Inner::Static(moff, mw)
+                }
+                None => Inner::Static(0, sub_w),
+            }
+        } else if select.is_const_with_range() {
+            let Some((hi, lo)) = select.eval_value(&mut self.eval, &info.ty, false) else {
+                return unsupported("select could not be evaluated", token);
+            };
+            if hi < lo {
+                return unsupported("reversed select", token);
+            }
+            Inner::Static(lo, hi - lo + 1)
+        } else {
+            let (off, w) = self.dynamic_select(p, case, info, select, ct, token)?;
+            Inner::Dynamic(off, w)
+        };
+        let mut chunks_lsb_first: Vec<SigSpec> = Vec::with_capacity(count);
+        for c in (0..count).rev() {
+            // Chunk `c` sits at offset (count-1-c)*sub_w.
+            let off = (count - 1 - c) * sub_w;
+            let old = base.extract(off, sub_w);
+            let new = match &inner {
+                Inner::Static(lo, w) => {
+                    let v = val.resize(*w, false);
+                    if *lo >= sub_w { old.clone() } else { old.splice(*lo, &v) }
+                }
+                Inner::Dynamic(o, w) => {
+                    let v = val.resize(*w, false);
+                    let ones = SigSpec::fill(Bit::One, *w).resize(sub_w, false);
+                    let fw = o.width() + 1;
+                    let o2 = o.resize(fw, true);
+                    let noff = self.m.unop("$neg", &o2, true, fw);
+                    let mask = self.m.binop("$shift", &ones, &noff, false, true, sub_w);
+                    let sval = self.m.binop("$shift", &v.resize(sub_w, false), &noff, false, true, sub_w);
+                    self.m.bwmux(&old, &sval, &mask)
+                }
+            };
+            let cc = SigSpec::const_u64(c as u64, k);
+            let sel = self.m.binop("$eq", &g, &cc, false, false, 1);
+            let merged = self.m.mux(&old, &new, &sel);
+            chunks_lsb_first.push(merged);
+        }
+        let mut sig = SigSpec::concat_lsb_first(&chunks_lsb_first);
+        if sig.width() < base.width() {
+            sig.append(&base.extract(sig.width(), base.width() - sig.width()));
+        }
+        Ok(sig)
     }
 
     // ----- expression sizing -------------------------------------------
