@@ -470,6 +470,21 @@ impl<'a> ModCtx<'a> {
             } else {
                 let name = public_id(&v.path.to_string());
                 self.m.add_wire(&name, total);
+                // Per-element alias wires `\name[i]`: Yosys' memory mapping
+                // names memory words this way, so the equivalence checker can
+                // pair the state elements of both sides.
+                if !shape.is_empty() && nelem >= 1 {
+                    for f in 0..nelem {
+                        let alias = public_id(&format!("{}[{}]", v.path, f));
+                        if self.m.has_wire(&alias) {
+                            continue;
+                        }
+                        let a = self.m.add_wire(&alias, ew);
+                        let off = (nelem - 1 - f) * ew;
+                        let src = SigSpec::wire(&name, total).extract(off, ew);
+                        self.m.connect(a, src);
+                    }
+                }
                 name
             };
             self.vars.insert(

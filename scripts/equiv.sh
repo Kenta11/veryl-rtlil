@@ -37,7 +37,7 @@ cleanup() { if [ "$keep" = 0 ]; then rm -rf "$work"; else echo "work: $work" >&2
 trap cleanup EXIT
 
 # Common normalisation applied to both sides.
-norm='proc; flatten; async2sync; memory -nomap; memory_map; opt_clean; wreduce; opt_clean'
+norm='proc; flatten; async2sync; memory -nomap; memory_map; opt_clean; wreduce; opt_clean; setundef -undriven -undef'
 
 # Gold is read from the smallest file set that elaborates: the module's own
 # file, then whatever "unknown package/module/interface" errors ask for.
