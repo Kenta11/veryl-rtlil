@@ -63,6 +63,7 @@ pub fn translate_ir(ir: &Ir, opts: &Options) -> (Design, Report) {
         by_ptr: HashMap::new(),
         used_names: HashSet::new(),
         in_progress: HashSet::new(),
+        done_sig: HashMap::new(),
     };
     let mut report = Report::default();
     // Register top-level bodies first so instantiated copies with the same
@@ -115,6 +116,8 @@ struct Translator {
     by_ptr: HashMap<usize, String>,
     used_names: HashSet<String>,
     in_progress: HashSet<usize>,
+    /// Translated bodies by signature.
+    done_sig: HashMap<Signature, String>,
 }
 
 impl Translator {
@@ -169,6 +172,11 @@ impl Translator {
         if let Some(n) = self.by_ptr.get(&key) {
             return Ok(n.clone());
         }
+        // Two bodies with the same signature are the same monomorphization.
+        if let Some(n) = self.done_sig.get(&m.signature) {
+            self.by_ptr.insert(key, n.clone());
+            return Ok(n.clone());
+        }
         if self.in_progress.contains(&key) {
             return internal("recursive module instantiation");
         }
@@ -187,6 +195,7 @@ impl Translator {
         match r {
             Ok(name) => {
                 self.by_ptr.insert(key, name.clone());
+                self.done_sig.insert(m.signature.clone(), name.clone());
                 Ok(name)
             }
             Err(e) => Err(e),
