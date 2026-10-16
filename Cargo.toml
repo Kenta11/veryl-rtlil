@@ -1,0 +1,32 @@
+[package]
+name = "veryl-rtlil"
+version = "0.1.0"
+edition = "2024"
+description = "Translate Veryl IR to Yosys RTLIL so pure Veryl designs can be synthesized by Yosys directly"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Kenta11/veryl-rtlil"
+
+[[bin]]
+name = "veryl-rtlil"
+path = "src/main.rs"
+
+[lib]
+name = "veryl_rtlil"
+path = "src/lib.rs"
+
+[dependencies]
+veryl          = "=0.22.0"
+veryl-analyzer = "=0.22.0"
+veryl-parser   = "=0.22.0"
+veryl-metadata = "=0.22.0"
+clap           = { version = "4.5", features = ["derive"] }
+miette         = { version = "7.6", features = ["fancy"] }
+thiserror      = "2.0"
+num-bigint     = "0.5"
+num-traits     = "0.2"
+fxhash         = "0.2"
+log            = "0.4"
+env_logger     = "0.11"
+
+[profile.release]
+debug = 1
