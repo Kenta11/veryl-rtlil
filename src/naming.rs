@@ -16,7 +16,7 @@ pub fn project_of(sig: &Signature) -> Option<String> {
 /// Module name as emitted into SystemVerilog.
 pub fn sv_module_name(sig: &Signature, name: &str, omit_project_prefix: bool) -> String {
     match project_of(sig).as_deref() {
-        Some("std") | Some("$std") => format!("__std_{name}"),
+        Some("$std") => format!("__std_{name}"),
         Some(prj) if !omit_project_prefix => format!("{prj}_{name}"),
         _ => name.to_string(),
     }
