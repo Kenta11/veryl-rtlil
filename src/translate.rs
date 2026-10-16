@@ -202,7 +202,14 @@ impl Translator {
             if let Declaration::Inst(inst) = d {
                 match inst.component.as_ref() {
                     Component::Module(cm) => {
-                        let name = self.translate_module(cm)?;
+                        let name = self.translate_module(cm).map_err(|e| match e {
+                            TranslateError::Unsupported(m) => TranslateError::Unsupported(
+                                format!("in {}: {}", str_of(cm.name), m),
+                            ),
+                            TranslateError::Internal(m) => {
+                                TranslateError::Internal(format!("in {}: {}", str_of(cm.name), m))
+                            }
+                        })?;
                         children.insert(Self::module_key(cm), name);
                     }
                     Component::Interface(_) => {
@@ -331,6 +338,18 @@ fn value_to_bits(v: &Value, width: usize) -> Vec<Bit> {
         }
     }
     bits
+}
+
+/// The bit an unsized fill literal replicates.
+fn fill_bit(v: &Value) -> Bit {
+    let p = v.payload().bit(0);
+    let x = v.mask_xz().bit(0);
+    match (x, p) {
+        (false, false) => Bit::Zero,
+        (false, true) => Bit::One,
+        (true, false) => Bit::X,
+        (true, true) => Bit::Z,
+    }
 }
 
 fn value_to_sig(v: &Value, width: usize) -> SigSpec {
@@ -1335,7 +1354,9 @@ impl<'a> ModCtx<'a> {
                 off = Offset::Static(info.total - (f0 + rem_elems) * info.ew);
             } else {
                 let Some((p, case)) = pw.as_mut() else {
-                    return Ok((Offset::Static(0), sub_w, None));
+                    // Width-only query: keep a placeholder offset and fall
+                    // through to the select handling below.
+                    return self.region_select_width_only(info, select, ct, token, sub_w);
                 };
                 // f = sum idx_i * stride_i ; off = (nelem - rem - f) * ew.
                 // Everything unsigned; an out-of-range element (f >= count)
@@ -1432,6 +1453,38 @@ impl<'a> ModCtx<'a> {
             }
         };
         Ok((off, w, valid_sig))
+    }
+
+    /// Width of a reference whose unpacked index is dynamic, computed without
+    /// a process context (offset is a placeholder).
+    fn region_select_width_only(
+        &mut self,
+        info: &VarInfo,
+        select: &VarSelect,
+        ct: &Comptime,
+        token: &TokenRange,
+        sub_w: usize,
+    ) -> TResult<(Offset, usize, Option<SigSpec>)> {
+        if select.is_empty() {
+            if let Some(ps) = &ct.part_select {
+                let Some(mw) = ps.part_select.last().and_then(|x| x.r#type.total_width()) else {
+                    return unsupported("unresolved member width", token);
+                };
+                return Ok((Offset::Static(0), mw, None));
+            }
+            return Ok((Offset::Static(0), sub_w, None));
+        }
+        if select.is_const_with_range() {
+            let Some((hi, lo)) = select.eval_value(&mut self.eval, &info.ty, false) else {
+                return unsupported("select could not be evaluated", token);
+            };
+            if hi < lo {
+                return unsupported("reversed select", token);
+            }
+            return Ok((Offset::Static(0), hi - lo + 1, None));
+        }
+        let w = self.dynamic_select_width(info, select, token)?;
+        Ok((Offset::Static(0), w, None))
     }
 
     /// Packed dimension strides (outermost first) and the kind width.
@@ -1586,13 +1639,21 @@ impl<'a> ModCtx<'a> {
                 }
             }
             Offset::Dynamic(o) => {
-                let v = self.m.binop("$shiftx", &base, &o, false, false, w);
-                match self.last_valid.take() {
-                    Some(valid) => {
-                        let x = SigSpec::fill(Bit::X, w);
-                        self.m.mux(&x, &v, &valid)
+                let valid = self.last_valid.take();
+                if info.nelem == 1 && !index.0.is_empty() && select.is_empty() {
+                    // A one-element array read through a dynamic index: Yosys'
+                    // memory mapping returns the single word regardless of the
+                    // address, and SystemVerilog allows any value here.
+                    base.extract(0, w.min(info.total)).resize(w, false)
+                } else {
+                    let v = self.m.binop("$shiftx", &base, &o, false, false, w);
+                    match valid {
+                        Some(valid) => {
+                            let x = SigSpec::fill(Bit::X, w);
+                            self.m.mux(&x, &v, &valid)
+                        }
+                        None => v,
                     }
-                    None => v,
                 }
             }
         };
@@ -1693,6 +1754,7 @@ impl<'a> ModCtx<'a> {
     fn factor_size(&mut self, f: &Factor) -> TResult<(usize, bool)> {
         match f {
             Factor::Value(ct) => match ct.get_value() {
+                Ok(v) if v.width() == 0 => Ok((1, false)),
                 Ok(v) => Ok((v.width(), v.signed())),
                 Err(_) => unsupported("non-numeric value", &ct.token),
             },
@@ -2060,6 +2122,11 @@ impl<'a> ModCtx<'a> {
                 let v = ct
                     .get_value()
                     .map_err(|_| TranslateError::Unsupported("non-numeric value".into()))?;
+                if v.width() == 0 {
+                    // Unsized fill literal `'0` / `'1` / `'x` / `'z`.
+                    let b = fill_bit(v);
+                    return Ok(SigSpec::fill(b, cw));
+                }
                 let sig = value_to_sig(v, v.width());
                 Ok(sig.resize(cw, cs && v.signed()))
             }

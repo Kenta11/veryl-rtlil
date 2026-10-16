@@ -39,16 +39,16 @@ trap cleanup EXIT
 # Common normalisation applied to both sides.
 norm='proc; flatten; async2sync; memory -nomap; memory_map; opt_clean; wreduce; opt_clean'
 
-# The file defining the gold module; errors located in other files drop
-# those files and retry.
-cp "$filelist" "$work/files.f"
-own="$(grep -l -E "^(module|interface) +$gold\b" $(cat "$work/files.f") 2>/dev/null | head -1)"
-if [ -z "$own" ] && [ -n "${FULL_FILELIST:-}" ]; then
-  # The module's file was dropped by the global cleaning; put it back.
-  own="$(grep -l -E "^(module|interface) +$gold\b" $(cat "$FULL_FILELIST") 2>/dev/null | head -1)"
-  [ -n "$own" ] && echo "$own" >> "$work/files.f"
+# Gold is read from the smallest file set that elaborates: the module's own
+# file, then whatever "unknown package/module/interface" errors ask for.
+own="$(/usr/bin/grep -lzP "(^|\n)\s*(module|interface)\s+$gold\b" $(cat "${FULL_FILELIST:-$filelist}") 2>/dev/null | head -1)"
+if [ -z "$own" ]; then
+  echo "GOLD_FAIL $gold: definition not found in the filelist"
+  exit 2
 fi
-for _ in $(seq 1 40); do
+echo "$own" > "$work/files.f"
+ok=0
+for _ in $(seq 1 60); do
   {
     echo "read_slang -f $work/files.f --top $gold"
     echo "hierarchy -top $gold"
@@ -57,21 +57,20 @@ for _ in $(seq 1 40); do
     echo "write_rtlil $work/gold.il"
   } > "$work/gold.ys"
   if "$YOSYS" -q -l "$work/gold.log" -s "$work/gold.ys" >/dev/null 2>&1; then
+    ok=1
     break
   fi
-  bad="$(grep -m1 -E '^[^ ]+\.sv:[0-9]+: ERROR' "$work/gold.log" | sed -E 's/^([^:]+):.*/\1/')"
-  if [ -z "$bad" ]; then
-    bad="$(grep -B40 -m1 'ERROR' "$work/gold.log" | grep -oE '^[^ ]+\.sv:[0-9]+' | tail -1 | sed -E 's/:[0-9]+$//')"
+  missing="$(grep -m1 -oE "ERROR: unknown (class or package|package|module|interface|class) '[^']+'" "$work/gold.log" | sed -E "s/.*'([^']+)'/\1/")"
+  if [ -z "$missing" ]; then
+    break
   fi
-  if [ -n "$bad" ] && [ "$bad" != "$own" ] && grep -q -F "$bad" "$work/files.f"; then
-    grep -v -F "$bad" "$work/files.f" > "$work/files2.f"
-    mv "$work/files2.f" "$work/files.f"
-    continue
+  def="$(/usr/bin/grep -lzP "(^|\n)\s*(package|module|interface)\s+$missing\b" $(cat "${FULL_FILELIST:-$filelist}") 2>/dev/null | head -1)"
+  if [ -z "$def" ] || grep -q -F "$def" "$work/files.f"; then
+    break
   fi
-  echo "GOLD_FAIL $gold: $(grep -m1 'ERROR' "$work/gold.log" | cut -c1-200)"
-  exit 2
+  echo "$def" >> "$work/files.f"
 done
-if [ ! -f "$work/gold.il" ]; then
+if [ "$ok" != 1 ]; then
   echo "GOLD_FAIL $gold: $(grep -m1 'ERROR' "$work/gold.log" | cut -c1-200)"
   exit 2
 fi
@@ -93,8 +92,8 @@ fi
   echo "read_rtlil $work/gate.il"
   echo "equiv_make gold gate equiv"
   echo "hierarchy -top equiv"
-  echo "equiv_simple -seq $seq"
-  echo "equiv_induct -seq $seq"
+  echo "equiv_simple -undef -seq $seq"
+  echo "equiv_induct -undef -seq $seq"
   echo "equiv_status -assert"
 } > "$work/equiv.ys"
 if "$YOSYS" -q -l "$work/equiv.log" -s "$work/equiv.ys" >/dev/null 2>&1; then
