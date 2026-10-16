@@ -43,9 +43,11 @@ grep -v '^\[INFO' "$work/report.txt" > "$work/report2.txt"
 : > "$summary"
 grep '^SKIP' "$work/report2.txt" | sed 's/^SKIP \([^ ]*\) - [^ ]* /SKIP \1: /' >> "$summary"
 
+# Each module gets EQUIV_TIMEOUT seconds (default 30 minutes); a module that
+# runs out is reported as TIMEOUT.
 grep '^OK' "$work/report2.txt" | awk '{print $2, $3}' | \
-  xargs -P "$jobs" -L 1 bash -c 'YOSYS="'"${YOSYS:-yosys}"'" "'"$here"'/equiv.sh" -f "'"$filelist"'" -i "'"$work"'/design.il" -g "$0" -r "$1" -s "'"$seq"'"' \
+  xargs -P "$jobs" -L 1 bash -c 'out="$(timeout "'"${EQUIV_TIMEOUT:-1800}"'" env YOSYS="'"${YOSYS:-yosys}"'" "'"$here"'/equiv.sh" -f "'"$filelist"'" -i "'"$work"'/design.il" -g "$0" -r "$1" -s "'"$seq"'" 2>/dev/null)"; rc=$?; if [ $rc = 124 ]; then echo "TIMEOUT $0"; else echo "$out"; fi' \
   >> "$summary" 2>/dev/null
 
 echo "summary: $summary"
-echo "PASS: $(grep -c '^PASS' "$summary")  FAIL: $(grep -c '^FAIL' "$summary")  GOLD_FAIL: $(grep -c '^GOLD_FAIL' "$summary")  GATE_FAIL: $(grep -c '^GATE_FAIL' "$summary")  SKIP: $(grep -c '^SKIP' "$summary")"
+echo "PASS: $(grep -c '^PASS' "$summary")  FAIL: $(grep -c '^FAIL' "$summary")  GOLD_FAIL: $(grep -c '^GOLD_FAIL' "$summary")  GATE_FAIL: $(grep -c '^GATE_FAIL' "$summary")  TIMEOUT: $(grep -c '^TIMEOUT' "$summary")  SKIP: $(grep -c '^SKIP' "$summary")"
