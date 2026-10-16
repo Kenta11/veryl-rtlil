@@ -50,7 +50,7 @@ echo "$own" > "$work/files.f"
 ok=0
 for _ in $(seq 1 60); do
   {
-    echo "read_slang -f $work/files.f --top $gold"
+    echo "read_slang -f $work/files.f --top $gold --unroll-limit 1000000"
     echo "hierarchy -top $gold"
     echo "$norm"
     echo "rename $gold gold"

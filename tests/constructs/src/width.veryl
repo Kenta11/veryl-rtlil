@@ -1,0 +1,76 @@
+module Widths (
+    a: input logic<8>, b: input logic<8>, c: input logic<4>, sa: input signed logic<8>, sb: input signed logic<8>,
+    y9: output logic<9>, y4: output logic<4>, f1: output logic, f2: output logic, f3: output logic,
+    m: output logic<16>, n: output logic<8>, s1: output signed logic<4>, u1: output logic<8>,
+    t: output logic<8>, r1: output logic, r2: output logic, r3: output logic, r4: output logic,
+    neg: output logic<9>, dq: output logic<8>, dm: output logic<8>, sd: output signed logic<8>, sm: output signed logic<8>,
+    f4: output logic, f5: output logic, ms: output signed logic<16>,
+) {
+    assign y9 = a + b;
+    assign y4 = (a + b) >> 1;
+    assign f1 = (a + b) >: c;
+    assign f2 = sa <: c;
+    assign f3 = (a + b) >: 9'd255;
+    assign m  = a * b;
+    assign n  = -1;
+    assign s1 = sa >>> 2;
+    assign u1 = {4'd1, c} + sa;
+    assign t  = if c ? a : c;
+    assign r1 = &a;
+    assign r2 = ^a;
+    assign r3 = ~&a;
+    assign r4 = !a;
+    assign neg = -a;
+    assign dq = a / b;
+    assign dm = a % b;
+    assign sd = sa / sb;
+    assign sm = sa % sb;
+    assign f4 = sa <: sb;
+    assign f5 = sa == c;
+    assign ms = sa * sb;
+}
+module ShiftBig (a: input logic<8>, s: input logic<5>, sa: input signed logic<8>, o: output logic<8>, p: output signed logic<8>, q: output logic<8>) {
+    assign o = a << s;
+    assign p = sa >>> s;
+    assign q = a >> s;
+}
+module EnumConv (e: input MorePkg::Op, i: input logic<2>, o: output logic<2>, p: output MorePkg::Op, q: output logic) {
+    assign o = e as 2;
+    assign p = i as MorePkg::Op;
+    assign q = e == MorePkg::Op::SUB;
+}
+module MultiFf (i_clk: input clock, i_rst: input reset, a: input logic<4>, b: input logic<4>, q: output logic<8>) {
+    always_ff { if_reset { q[3:0] = 0; } else { q[3:0] = a; } }
+    always_ff { if_reset { q[7:4] = 4'hf; } else { q[7:4] = b; } }
+}
+module MultiComb (a: input logic<4>, b: input logic<4>, o: output logic<8>) {
+    always_comb { o[3:0] = a; }
+    always_comb { o[7:4] = b; }
+}
+module RstNest (i_clk: input clock, i_rst: input reset, en: input logic, d: input logic<4>, q: output logic<4>, cnt: output logic<4>) {
+    always_ff {
+        if_reset { q = 0; } else { if en { q = d; } }
+    }
+    always_ff {
+        cnt = cnt + 1;
+    }
+}
+module ClkArr (clks: input clock [2], d: input logic<4>, q: output logic<4>) {
+    always_ff (clks[1]) { q = d; }
+}
+module StructArr (i_clk: input clock, i_rst: input reset, idx: input logic<2>, v: input logic<4>, o: output logic<16>) {
+    var ps: MorePkg::Pair [4];
+    always_ff {
+        if_reset { ps = '{default: MorePkg::Pair'{hi: 4'd1, lo: 4'd2}}; }
+        else { ps[idx].lo = v; }
+    }
+    assign o = {ps[0].lo, ps[1].lo, ps[2].hi, ps[3].lo};
+}
+module Nested2D (m: input logic<2, 3, 4>, i: input logic<1>, j: input logic<2>, o: output logic<4>, p: output logic<12>) {
+    assign o = m[i][j];
+    assign p = m[i];
+}
+module Unpacked2D (m: input logic<4> [2, 3], i: input logic<1>, j: input logic<2>, o: output logic<4>, p: output logic<12>) {
+    assign o = m[i][j];
+    assign p = {m[i][0], m[i][1], m[i][2]};
+}

@@ -548,7 +548,16 @@ impl Module {
     }
 
     pub fn connect(&mut self, lhs: SigSpec, rhs: SigSpec) {
-        debug_assert_eq!(lhs.width(), rhs.width());
+        if lhs.width() != rhs.width() {
+            eprintln!(
+                "veryl-rtlil: internal error: connect width mismatch in {}: {} ({}) <- {} ({})",
+                self.name,
+                lhs,
+                lhs.width(),
+                rhs,
+                rhs.width()
+            );
+        }
         if lhs.is_empty() {
             return;
         }

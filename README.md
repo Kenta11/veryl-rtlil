@@ -64,9 +64,13 @@ Status on Veryl 0.22.0 (Yosys 0.70 from oss-cad-suite):
 |---------------------------------|-----------:|-----------------------------------------|------------------:|
 | `veryl` repository `testcases/` | 150        | 31 (SV embedding, generics, floats, ...) | 40 |
 | `crates/std/veryl` (std lib)    | 28         | 17 (test modules with `initial`)        | 4 (generic) |
+| `tests/constructs` (this repo)  | 87         | 0                                       | 3 (interface port / generic) |
 
 "No SV counterpart" are modules that sv-elab cannot read as a top (interface
-ports, external SystemVerilog packages, generic modules).
+ports, external SystemVerilog packages, generic modules).  `scripts/test_constructs.sh`
+runs the construct suite.  One known limit of the prover rather than the
+translation: a `**` with a non-constant exponent becomes a `$pow` cell on both
+sides, which Yosys' SAT backend cannot model.
 
 ## Requirements
 

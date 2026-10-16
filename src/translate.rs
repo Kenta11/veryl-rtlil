@@ -482,7 +482,12 @@ impl<'a> ModCtx<'a> {
             let wire = if konst.is_some() || total == 0 {
                 String::new()
             } else {
-                let name = public_id(&v.path.to_string());
+                // Block-scoped `let`s may repeat a path with another type;
+                // keep each VarId's storage separate.
+                let mut name = public_id(&v.path.to_string());
+                if self.m.has_wire(&name) {
+                    name = format!("{name}${}", v.id);
+                }
                 self.m.add_wire(&name, total);
                 // Per-element alias wires `\name[i]`: Yosys' memory mapping
                 // names memory words this way, so the equivalence checker can
