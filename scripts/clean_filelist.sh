@@ -26,7 +26,16 @@ for _ in $(seq 1 60); do
     exit 1
   fi
   echo "drop $bad: $(grep -m1 -E "^$bad:[0-9]+" "$work/t.log" | cut -c1-160)" >&2
-  grep -v -F "$bad" "$out" > "$work/next.f"
+  # slang reports paths relative to the working directory; compare resolved paths.
+  badabs="$(realpath -m "$bad")"
+  : > "$work/next.f"
+  while IFS= read -r line; do
+    [ "$(realpath -m "$line")" = "$badabs" ] || echo "$line" >> "$work/next.f"
+  done < "$out"
+  if cmp -s "$out" "$work/next.f"; then
+    echo "cannot drop $bad" >&2
+    exit 1
+  fi
   mv "$work/next.f" "$out"
 done
 exit 1
